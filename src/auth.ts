@@ -14,16 +14,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     pages: {
         signIn: "/auth/signin",
     },
+    trustHost: true,
     providers: [
         GoogleProvider({
             clientId: process.env.GOOGLE_CLIENT_ID!,
             clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-            allowDangerousEmailAccountLinking: true,
         }),
         GitHubProvider({
             clientId: process.env.GITHUB_ID!,
             clientSecret: process.env.GITHUB_SECRET!,
-            allowDangerousEmailAccountLinking: true,
         }),
         CredentialsProvider({
             name: "credentials",
@@ -64,7 +63,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             },
         }),
     ],
-    debug: process.env.NODE_ENV === "development",
     callbacks: {
         async session({ session, token }) {
             if (token) {
@@ -79,14 +77,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         async jwt({ token, user, trigger }) {
             if (user) {
                 token.id = user.id
-                // Check if user has a profile on first sign-in
                 const profile = await prisma.userProfile.findUnique({
                     where: { userId: user.id as string },
                     select: { id: true },
                 })
                 token.hasProfile = !!profile
             }
-            // Refresh hasProfile on session update
             if (trigger === "update" && token.id) {
                 const profile = await prisma.userProfile.findUnique({
                     where: { userId: token.id as string },
