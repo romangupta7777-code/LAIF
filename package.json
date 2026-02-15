@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.1",
+    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.19.2",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.4",
+    "framer-motion": "^12.34.0",
+    "mixpanel-browser": "^2.74.0",
     "next": "^15.1.6",
     "next-auth": "^5.0.0-beta.30",
     "react": "^19.0.0",

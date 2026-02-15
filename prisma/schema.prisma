@@ -29,6 +29,7 @@ model User {
   suggestions   Suggestion[]
   moodEntries   MoodEntry[]
   habits        Habit[]
+  healthLogs    HealthLog[]
 }
 
 model Account {
@@ -173,4 +174,23 @@ model Product {
   image       String?
 
   createdAt   DateTime @default(now())
+}
+
+model HealthLog {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date          DateTime @default(now())
+  steps         Int?
+  sleepHours    Float?
+  waterGlasses  Int?
+  workoutMins   Int?
+  workoutType   String?
+  notes         String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, date])
 }

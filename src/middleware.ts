@@ -11,6 +11,11 @@ export async function middleware(req: NextRequest) {
         req.nextUrl.pathname.startsWith("/goals") ||
         req.nextUrl.pathname.startsWith("/suggestions") ||
         req.nextUrl.pathname.startsWith("/profile") ||
+        req.nextUrl.pathname.startsWith("/onboarding") ||
+        req.nextUrl.pathname.startsWith("/schedule") ||
+        req.nextUrl.pathname.startsWith("/wellness") ||
+        req.nextUrl.pathname.startsWith("/analytics") ||
+        req.nextUrl.pathname.startsWith("/automations") ||
         req.nextUrl.pathname.startsWith("/products")
 
     if (isProtectedRoute && !isLoggedIn) {

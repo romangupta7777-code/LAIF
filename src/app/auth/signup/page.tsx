@@ -61,7 +61,7 @@ export default function SignUpPage() {
                 setError("Registration successful but sign in failed. Please sign in manually.")
                 setTimeout(() => router.push("/auth/signin"), 2000)
             } else {
-                router.push("/dashboard")
+                router.push("/onboarding")
                 router.refresh()
             }
         } catch (error) {

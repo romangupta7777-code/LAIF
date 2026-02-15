@@ -13,7 +13,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     pages: {
         signIn: "/auth/signin",
-        signUp: "/auth/signup",
     },
     providers: [
         GoogleProvider({
@@ -68,14 +67,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             if (token) {
                 session.user.id = token.id as string
                 session.user.name = token.name
-                session.user.email = token.email
+                session.user.email = token.email as string
                 session.user.image = token.picture
+                session.user.hasProfile = token.hasProfile as boolean
             }
             return session
         },
-        async jwt({ token, user }) {
+        async jwt({ token, user, trigger }) {
             if (user) {
                 token.id = user.id
+                // Check if user has a profile on first sign-in
+                const profile = await prisma.userProfile.findUnique({
+                    where: { userId: user.id as string },
+                    select: { id: true },
+                })
+                token.hasProfile = !!profile
+            }
+            // Refresh hasProfile on session update
+            if (trigger === "update" && token.id) {
+                const profile = await prisma.userProfile.findUnique({
+                    where: { userId: token.id as string },
+                    select: { id: true },
+                })
+                token.hasProfile = !!profile
             }
             return token
         },
