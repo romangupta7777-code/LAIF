@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, master, staging]
+    branches: [main, master]
   pull_request:
     branches: [main, master]
 
@@ -57,9 +57,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
 
   # Note: Deployment is handled automatically by Vercel's Git integration.
-  # No need for manual deploy steps here.
+  # No manual deploy steps needed — Vercel triggers on push to main.
