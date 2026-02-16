@@ -91,6 +91,19 @@ export default function DashboardPage() {
     const [chatMessages, setChatMessages] = useState<Array<{ role: "user" | "ai"; text: string }>>([]
     )
     const [aiLoading, setAiLoading] = useState(false)
+    const [chatCooldown, setChatCooldown] = useState(0)
+
+    // Cooldown timer for rate limiting
+    useEffect(() => {
+        if (chatCooldown <= 0) return
+        const timer = setInterval(() => {
+            setChatCooldown((prev) => {
+                if (prev <= 1) return 0
+                return prev - 1
+            })
+        }, 1000)
+        return () => clearInterval(timer)
+    }, [chatCooldown])
 
     useEffect(() => {
         loadData()
@@ -399,11 +412,11 @@ export default function DashboardPage() {
                             type="text"
                             value={askInput}
                             onChange={(e) => setAskInput(e.target.value)}
-                            placeholder="Ask LAif anything..."
+                            placeholder={chatCooldown > 0 ? `Wait ${chatCooldown}s...` : "Ask LAif anything..."}
                             className="w-full px-5 py-3.5 bg-white/90 backdrop-blur-sm border border-gray-200 rounded-2xl text-sm text-gray-700 placeholder-gray-400 shadow-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none transition pr-12"
-                            disabled={aiLoading}
+                            disabled={aiLoading || chatCooldown > 0}
                             onKeyDown={(e) => {
-                                if (e.key === "Enter" && askInput.trim() && !aiLoading) {
+                                if (e.key === "Enter" && askInput.trim() && !aiLoading && chatCooldown <= 0) {
                                     e.preventDefault()
                                     const q = askInput.trim()
                                     setAskInput("")
@@ -413,6 +426,9 @@ export default function DashboardPage() {
                                         setAiLoading(false)
                                         if (res.answer) {
                                             setChatMessages((prev) => [...prev, { role: "ai", text: res.answer! }])
+                                        } else if (res.rateLimited) {
+                                            setChatCooldown(30)
+                                            setChatMessages((prev) => [...prev, { role: "ai", text: "🕐 I'm a bit busy right now — please wait about 30 seconds and try again!" }])
                                         } else {
                                             setChatMessages((prev) => [...prev, { role: "ai", text: res.error || "Something went wrong." }])
                                         }
@@ -421,9 +437,9 @@ export default function DashboardPage() {
                             }}
                         />
                         <button
-                            disabled={aiLoading || !askInput.trim()}
+                            disabled={aiLoading || chatCooldown > 0 || !askInput.trim()}
                             onClick={() => {
-                                if (!askInput.trim() || aiLoading) return
+                                if (!askInput.trim() || aiLoading || chatCooldown > 0) return
                                 const q = askInput.trim()
                                 setAskInput("")
                                 setChatMessages((prev) => [...prev, { role: "user", text: q }])
@@ -432,6 +448,9 @@ export default function DashboardPage() {
                                     setAiLoading(false)
                                     if (res.answer) {
                                         setChatMessages((prev) => [...prev, { role: "ai", text: res.answer! }])
+                                    } else if (res.rateLimited) {
+                                        setChatCooldown(30)
+                                        setChatMessages((prev) => [...prev, { role: "ai", text: "🕐 I'm a bit busy right now — please wait about 30 seconds and try again!" }])
                                     } else {
                                         setChatMessages((prev) => [...prev, { role: "ai", text: res.error || "Something went wrong." }])
                                     }

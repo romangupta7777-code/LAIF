@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { getAISuggestions, askLAifQuestion } from "./actions"
 
@@ -13,6 +13,8 @@ const TABS = [
 
 type TabType = (typeof TABS)[number]["id"]
 
+const COOLDOWN_SECONDS = 30
+
 export default function SuggestionsPage() {
     const [isPending, startTransition] = useTransition()
     const [activeTab, setActiveTab] = useState<TabType>("all")
@@ -20,21 +22,46 @@ export default function SuggestionsPage() {
     const [error, setError] = useState("")
     const [question, setQuestion] = useState("")
     const [chatHistory, setChatHistory] = useState<Array<{ role: "user" | "ai"; text: string }>>([])
+    const [cooldown, setCooldown] = useState(0)
+    const [fromCache, setFromCache] = useState(false)
 
-    const handleGenerate = (type: TabType) => {
+    // Cooldown timer
+    useEffect(() => {
+        if (cooldown <= 0) return
+        const timer = setInterval(() => {
+            setCooldown((prev) => {
+                if (prev <= 1) return 0
+                return prev - 1
+            })
+        }, 1000)
+        return () => clearInterval(timer)
+    }, [cooldown])
+
+    const handleGenerate = useCallback((type: TabType) => {
+        if (cooldown > 0) return
         setError("")
+        setFromCache(false)
         startTransition(async () => {
             const result = await getAISuggestions(type)
             if (result.error) {
                 setError(result.error)
+                if (result.rateLimited) {
+                    setCooldown(COOLDOWN_SECONDS)
+                }
             } else if (result.content) {
                 setContent((prev) => ({ ...prev, [type]: result.content! }))
+                if (result.fromCache) {
+                    setFromCache(true)
+                }
+                if (result.rateLimited) {
+                    setCooldown(COOLDOWN_SECONDS)
+                }
             }
         })
-    }
+    }, [cooldown, startTransition])
 
-    const handleAsk = () => {
-        if (!question.trim()) return
+    const handleAsk = useCallback(() => {
+        if (!question.trim() || cooldown > 0) return
         const q = question.trim()
         setQuestion("")
         setChatHistory((prev) => [...prev, { role: "user", text: q }])
@@ -43,12 +70,20 @@ export default function SuggestionsPage() {
         startTransition(async () => {
             const result = await askLAifQuestion(q)
             if (result.error) {
-                setError(result.error)
+                if (result.rateLimited) {
+                    setCooldown(COOLDOWN_SECONDS)
+                    setChatHistory((prev) => [
+                        ...prev,
+                        { role: "ai", text: "🕐 I'm a bit busy right now — please wait about 30 seconds and try again!" },
+                    ])
+                } else {
+                    setError(result.error)
+                }
             } else if (result.answer) {
                 setChatHistory((prev) => [...prev, { role: "ai", text: result.answer! }])
             }
         })
-    }
+    }, [question, cooldown, startTransition])
 
     const formatContent = (text: string) => {
         return text.split("\n").map((line, i) => {
@@ -76,6 +111,8 @@ export default function SuggestionsPage() {
         })
     }
 
+    const isDisabled = isPending || cooldown > 0
+
     return (
         <div className="min-h-screen bg-gradient-to-b from-white via-blue-50/30 to-blue-50 pb-24">
             {/* Nav */}
@@ -97,6 +134,14 @@ export default function SuggestionsPage() {
                     <p className="text-sm text-gray-500">Personalized recommendations powered by Gemini</p>
                 </div>
 
+                {/* Cooldown Banner */}
+                {cooldown > 0 && (
+                    <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700 flex items-center gap-2">
+                        <span className="text-lg">🕐</span>
+                        <span>AI is recharging — try again in <strong>{cooldown}s</strong></span>
+                    </div>
+                )}
+
                 {/* Tabs */}
                 <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
                     {TABS.map((tab) => (
@@ -104,8 +149,8 @@ export default function SuggestionsPage() {
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id)}
                             className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${activeTab === tab.id
-                                    ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
-                                    : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
+                                ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                : "bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
                                 }`}
                         >
                             <span>{tab.icon}</span>
@@ -133,7 +178,7 @@ export default function SuggestionsPage() {
                         </div>
                         <button
                             onClick={() => handleGenerate(activeTab)}
-                            disabled={isPending}
+                            disabled={isDisabled}
                             className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:from-blue-700 hover:to-indigo-700 transition-all disabled:opacity-50 shadow-md"
                         >
                             {isPending ? (
@@ -144,6 +189,8 @@ export default function SuggestionsPage() {
                                     </svg>
                                     Generating...
                                 </span>
+                            ) : cooldown > 0 ? (
+                                `Wait ${cooldown}s`
                             ) : (
                                 "Generate ✨"
                             )}
@@ -151,7 +198,14 @@ export default function SuggestionsPage() {
                     </div>
 
                     {content[activeTab] ? (
-                        <div className="prose prose-sm max-w-none">{formatContent(content[activeTab])}</div>
+                        <div>
+                            {fromCache && (
+                                <p className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg mb-3 inline-block">
+                                    📋 Showing your last saved results (AI was busy)
+                                </p>
+                            )}
+                            <div className="prose prose-sm max-w-none">{formatContent(content[activeTab])}</div>
+                        </div>
                     ) : (
                         <div className="text-center py-12">
                             <div className="text-5xl mb-3">🤖</div>
@@ -177,8 +231,8 @@ export default function SuggestionsPage() {
                                 >
                                     <div
                                         className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${msg.role === "user"
-                                                ? "bg-blue-600 text-white rounded-br-md"
-                                                : "bg-gray-100 text-gray-800 rounded-bl-md"
+                                            ? "bg-blue-600 text-white rounded-br-md"
+                                            : "bg-gray-100 text-gray-800 rounded-bl-md"
                                             }`}
                                     >
                                         {msg.role === "ai" ? (
@@ -210,13 +264,13 @@ export default function SuggestionsPage() {
                             value={question}
                             onChange={(e) => setQuestion(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && handleAsk()}
-                            placeholder="Ask about diet, exercise, wellness..."
+                            placeholder={cooldown > 0 ? `Wait ${cooldown}s...` : "Ask about diet, exercise, wellness..."}
                             className="flex-1 px-4 py-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none transition"
-                            disabled={isPending}
+                            disabled={isDisabled}
                         />
                         <button
                             onClick={handleAsk}
-                            disabled={isPending || !question.trim()}
+                            disabled={isDisabled || !question.trim()}
                             className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50"
                         >
                             →

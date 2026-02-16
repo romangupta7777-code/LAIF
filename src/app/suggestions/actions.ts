@@ -48,8 +48,25 @@ export async function getAISuggestions(
 
         return { content }
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to generate suggestions"
-        return { error: message }
+        const err = error as Error & { isRateLimit?: boolean }
+
+        // If rate limited, try to return the most recent cached suggestion from DB
+        if (err.isRateLimit) {
+            const cached = await prisma.suggestion.findFirst({
+                where: { userId: data.userId, type },
+                orderBy: { createdAt: "desc" },
+            })
+            if (cached) {
+                return {
+                    content: cached.content,
+                    fromCache: true,
+                    rateLimited: true,
+                }
+            }
+        }
+
+        const message = err.message || "Failed to generate suggestions"
+        return { error: message, rateLimited: err.isRateLimit || false }
     }
 }
 
@@ -71,8 +88,9 @@ export async function askLAifQuestion(question: string) {
 
         return { answer }
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to get response"
-        return { error: message }
+        const err = error as Error & { isRateLimit?: boolean }
+        const message = err.message || "Failed to get response"
+        return { error: message, rateLimited: err.isRateLimit || false }
     }
 }
 

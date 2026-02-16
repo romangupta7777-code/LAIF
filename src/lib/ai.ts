@@ -11,6 +11,46 @@ export function getModel(modelIndex = 0) {
     return { model: genAI.getGenerativeModel({ model: modelName }), modelName }
 }
 
+// ---------- Server-side in-memory cache ----------
+// Caches AI responses by prompt key for 5 minutes to avoid redundant API calls
+const responseCache = new Map<string, { text: string; timestamp: number }>()
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+function getCached(key: string): string | null {
+    const entry = responseCache.get(key)
+    if (!entry) return null
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+        responseCache.delete(key)
+        return null
+    }
+    return entry.text
+}
+
+function setCache(key: string, text: string) {
+    responseCache.set(key, { text, timestamp: Date.now() })
+    // Evict old entries (keep cache bounded)
+    if (responseCache.size > 50) {
+        const oldest = Array.from(responseCache.entries())
+            .sort((a, b) => a[1].timestamp - b[1].timestamp)[0]
+        if (oldest) responseCache.delete(oldest[0])
+    }
+}
+
+// ---------- Request throttle ----------
+// Prevents requests from firing faster than once per 4 seconds (server-wide)
+let lastRequestTime = 0
+const MIN_REQUEST_INTERVAL_MS = 4000
+
+async function throttle(): Promise<void> {
+    const now = Date.now()
+    const elapsed = now - lastRequestTime
+    if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+        const waitMs = MIN_REQUEST_INTERVAL_MS - elapsed
+        await new Promise((r) => setTimeout(r, waitMs))
+    }
+    lastRequestTime = Date.now()
+}
+
 interface UserContext {
     age?: number | null
     gender?: string | null
@@ -48,43 +88,42 @@ Always consider the user's profile data when giving advice.
 Format responses in clear, short paragraphs. Use emojis sparingly for warmth.
 Never diagnose medical conditions. Recommend consulting professionals for medical concerns.`
 
-function parseApiError(error: unknown): string {
+function parseApiError(error: unknown): { message: string; isRateLimit: boolean } {
     const err = error as { status?: number; statusText?: string; message?: string; errorDetails?: unknown[] }
 
     if (err?.status === 429) {
-        return "AI is busy right now — please wait a moment and try again."
+        return { message: "AI is busy right now — please wait about 30 seconds and try again.", isRateLimit: true }
     }
     if (err?.status === 403 || err?.status === 401) {
-        return "AI service is not configured. Please contact the administrator."
+        return { message: "AI service is not configured. Please contact the administrator.", isRateLimit: false }
     }
     if (err?.status === 400) {
-        return "Request was too complex — try a shorter or simpler question."
+        return { message: "Request was too complex — try a shorter or simpler question.", isRateLimit: false }
     }
     if (err?.status === 404) {
-        return "AI model not available — retrying with alternative model..."
+        return { message: "AI model not available — retrying with alternative model...", isRateLimit: false }
     }
 
     // Check for common Gemini error messages
     const msg = err?.message || ""
     if (msg.includes("API_KEY_INVALID") || msg.includes("API key not valid")) {
-        return "AI service is not configured properly. Please check the GEMINI_API_KEY."
+        return { message: "AI service is not configured properly. Please check the GEMINI_API_KEY.", isRateLimit: false }
     }
     if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
-        return "AI is busy right now — please wait a moment and try again."
+        return { message: "AI is busy right now — please wait about 30 seconds and try again.", isRateLimit: true }
     }
-    if (msg) return msg
-    return "An unexpected error occurred with the AI service."
+    if (msg) return { message: msg, isRateLimit: false }
+    return { message: "An unexpected error occurred with the AI service.", isRateLimit: false }
 }
 
-// Retry with exponential backoff and model fallback
+// Retry with model fallback only (no long waits that exceed Vercel timeout)
 async function callWithRetry(
     fn: (modelIndex: number) => Promise<string>,
-    maxRetries = 3
+    maxRetries = 1
 ): Promise<string> {
-    const delays = [2000, 5000, 10000] // Exponential backoff: 2s, 5s, 10s
-
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
+            await throttle()
             return await fn(0) // Try primary model
         } catch (error) {
             const err = error as { status?: number; message?: string }
@@ -103,11 +142,10 @@ async function callWithRetry(
                 }
             }
 
-            // If rate limited and retries remain, wait and retry
+            // If rate limited, do ONE quick retry after 1 second (safe for Vercel timeout)
             if (isRateLimit && attempt < maxRetries) {
-                const delay = delays[attempt] || 10000
-                console.log(`Rate limited (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay / 1000}s...`)
-                await new Promise((r) => setTimeout(r, delay))
+                console.log(`Rate limited (attempt ${attempt + 1}/${maxRetries + 1}), retrying in 1s...`)
+                await new Promise((r) => setTimeout(r, 1000))
                 continue
             }
 
@@ -127,6 +165,14 @@ export async function generateSuggestions(
         throw new Error("AI service is not configured. GEMINI_API_KEY is missing.")
     }
 
+    // Check cache first
+    const cacheKey = `suggestions:${type}:${JSON.stringify(profile)}`
+    const cached = getCached(cacheKey)
+    if (cached) {
+        console.log(`Cache hit for ${type} suggestions`)
+        return cached
+    }
+
     const context = buildProfileContext(profile)
 
     const prompts: Record<string, string> = {
@@ -143,17 +189,26 @@ Keep each suggestion concise (2-3 sentences). Format with clear headings.`,
     }
 
     try {
-        return await callWithRetry(async (modelIndex: number) => {
+        const result = await callWithRetry(async (modelIndex: number) => {
             const { model } = getModel(modelIndex)
-            const result = await model.generateContent({
+            const response = await model.generateContent({
                 contents: [{ role: "user", parts: [{ text: prompts[type] || prompts.general }] }],
                 systemInstruction: SYSTEM_INSTRUCTION,
             })
-            return result.response.text()
+            return response.response.text()
         })
+        setCache(cacheKey, result)
+        return result
     } catch (error) {
         console.error("Gemini API error:", error)
-        throw new Error(parseApiError(error))
+        const parsed = parseApiError(error)
+        if (parsed.isRateLimit) {
+            // Throw a special error so the action layer can return cached DB suggestions instead
+            const rateLimitError = new Error(parsed.message)
+                ; (rateLimitError as Error & { isRateLimit: boolean }).isRateLimit = true
+            throw rateLimitError
+        }
+        throw new Error(parsed.message)
     }
 }
 
@@ -166,22 +221,38 @@ export async function askLAif(
         throw new Error("AI service is not configured. GEMINI_API_KEY is missing.")
     }
 
+    // Check cache for this exact question
+    const cacheKey = `ask:${question.toLowerCase().trim()}`
+    const cached = getCached(cacheKey)
+    if (cached) {
+        console.log("Cache hit for question")
+        return cached
+    }
+
     const context = buildProfileContext(profile)
 
     try {
-        return await callWithRetry(async (modelIndex: number) => {
+        const result = await callWithRetry(async (modelIndex: number) => {
             const { model } = getModel(modelIndex)
-            const result = await model.generateContent({
+            const response = await model.generateContent({
                 contents: [{
                     role: "user",
                     parts: [{ text: `User profile: ${context}\n\nUser question: ${question}` }],
                 }],
                 systemInstruction: SYSTEM_INSTRUCTION,
             })
-            return result.response.text()
+            return response.response.text()
         })
+        setCache(cacheKey, result)
+        return result
     } catch (error) {
         console.error("Gemini API error:", error)
-        throw new Error(parseApiError(error))
+        const parsed = parseApiError(error)
+        if (parsed.isRateLimit) {
+            const rateLimitError = new Error(parsed.message)
+                ; (rateLimitError as Error & { isRateLimit: boolean }).isRateLimit = true
+            throw rateLimitError
+        }
+        throw new Error(parsed.message)
     }
 }
